@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supabase 多人实时同步画板</title>
+    <style>
+        /* 样式：全屏画板，禁止滚动 */
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #f0f0f0;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .toolbar {
+            background: #fff;
+            padding: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            z-index: 10;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        canvas {
+            display: block;
+            background: #fff;
+            cursor: crosshair;
+            touch-action: none; /* 防止移动端拖拽页面 */
+        }
+    </style>
+</head>
+<body>
+
+    <div class="toolbar">
+        <strong>🎨 实时协作画板</strong>
+        <span id="status">连接中...</span>
+        <button onclick="clearCanvas()">清空我的画布</button>
+    </div>
+
+    <canvas id="paintCanvas"></canvas>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+    <script>
+        // --- 2. 配置信息 (请在此处填写你的 Supabase 凭证) ---
+        const SUPABASE_URL = 'https://xqrksvjqeqhccltazpuw.supabase.co';
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhxcmtzdmpxZXFoY2NsdGF6cHV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5ODI3NzIsImV4cCI6MjA4MTU1ODc3Mn0.LBW8fjHnpyF2TLWz_Lgwk89rdbnHS7uQT-2EMME7Ca8';
+        
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // --- 3. 初始化画布 ---
+        const canvas = document.getElementById('paintCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusEl = document.getElementById('status');
+
+        // 设置画布大小为窗口大小
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight - 50; // 减去工具栏高度
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        let isDrawing = false;
+        let lastPos = { x: 0, y: 0 };
+        const myColor = '#' + Math.floor(Math.random()*16777215).toString(16); // 随机分配一个颜色
+
+        // --- 4. Supabase Realtime 核心逻辑 ---
+        
+        // 创建并订阅频道
+        const channel = supabaseClient.channel('drawing_room', {
+            config: { broadcast: { self: false } } // 不接收自己发出的广播
+        });
+
+        channel
+            .on('broadcast', { event: 'draw' }, (payload) => {
+                // 收到别人的坐标，画在自己的画布上
+                const { from, to, color } = payload.payload;
+                renderLine(from, to, color);
+            })
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    statusEl.innerText = '🟢 已连接 (在线协作中)';
+                    statusEl.style.color = 'green';
+                }
+            });
+
+        // --- 5. 绘图逻辑 ---
+
+        function renderLine(from, to, color) {
+            ctx.beginPath();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.moveTo(from.x, from.y);
+            ctx.lineTo(to.x, to.y);
+            ctx.stroke();
+            ctx.closePath();
+        }
+
+        function handleStart(x, y) {
+            isDrawing = true;
+            lastPos = { x, y };
+        }
+
+        function handleMove(x, y) {
+            if (!isDrawing) return;
+            const currentPos = { x, y };
+
+            // 1. 先在自己的画布上画
+            renderLine(lastPos, currentPos, myColor);
+
+            // 2. 将这一笔广播给所有人
+            channel.send({
+                type: 'broadcast',
+                event: 'draw',
+                payload: { from: lastPos, to: currentPos, color: myColor }
+            });
+
+            lastPos = currentPos;
+        }
+
+        function handleEnd() {
+            isDrawing = false;
+        }
+
+        // 鼠标事件
+        canvas.addEventListener('mousedown', e => handleStart(e.offsetX, e.offsetY));
+        canvas.addEventListener('mousemove', e => handleMove(e.offsetX, e.offsetY));
+        window.addEventListener('mouseup', handleEnd);
+
+        // 触摸事件 (适配手机)
+        canvas.addEventListener('touchstart', e => {
+            const touch = e.touches[0];
+            const rect = canvas.getBoundingClientRect();
+            handleStart(touch.clientX - rect.left, touch.clientY - rect.top);
+            e.preventDefault();
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', e => {
+            const touch = e.touches[0];
+            const rect = canvas.getBoundingClientRect();
+            handleMove(touch.clientX - rect.left, touch.clientY - rect.top);
+            e.preventDefault();
+        }, { passive: false });
+
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+    </script>
+</body>
+</html>
