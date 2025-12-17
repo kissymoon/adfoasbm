@@ -3,156 +3,232 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Supabase 多人实时同步画板</title>
+    <title>25商英1班共同绘作</title>
     <style>
-        /* 样式：全屏画板，禁止滚动 */
-        body {
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-            background-color: #f0f0f0;
-            font-family: sans-serif;
-            display: flex;
-            flex-direction: column;
-        }
-
+        body { margin: 0; background: #050510; overflow: hidden; touch-action: none; font-family: sans-serif; }
+        canvas { position: absolute; top: 0; left: 0; }
         .toolbar {
-            background: #fff;
-            padding: 10px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            z-index: 10;
+            position: relative;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(15px);
+            padding: 12px 20px;
+            z-index: 100;
             display: flex;
             gap: 20px;
             align-items: center;
+            color: rgba(255,255,255,0.8);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
         }
-
-        canvas {
-            display: block;
-            background: #fff;
-            cursor: crosshair;
-            touch-action: none; /* 防止移动端拖拽页面 */
+        #status { font-weight: bold; font-size: 0.9em; }
+        .debug-btn { 
+            background: rgba(255, 71, 87, 0.2); 
+            color: #ff4757; 
+            border: 1px solid #ff4757; 
+            padding: 4px 12px; 
+            border-radius: 20px; 
+            cursor: pointer;
+            transition: 0.3s;
+            font-size: 0.8em;
         }
+        .debug-btn:hover { background: #ff4757; color: white; }
     </style>
 </head>
 <body>
 
     <div class="toolbar">
-        <strong>🎨 实时协作画板</strong>
+        <strong>25商英1班共同绘作</strong>
         <span id="status">连接中...</span>
-        <button onclick="clearCanvas()">清空我的画布</button>
     </div>
 
-    <canvas id="paintCanvas"></canvas>
+    <canvas id="bgCanvas"></canvas>
+    <canvas id="canvas"></canvas>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
     <script>
-        // --- 2. 配置信息 (请在此处填写你的 Supabase 凭证) ---
         const SUPABASE_URL = 'https://xqrksvjqeqhccltazpuw.supabase.co';
         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhxcmtzdmpxZXFoY2NsdGF6cHV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5ODI3NzIsImV4cCI6MjA4MTU1ODc3Mn0.LBW8fjHnpyF2TLWz_Lgwk89rdbnHS7uQT-2EMME7Ca8';
-        
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-        // --- 3. 初始化画布 ---
-        const canvas = document.getElementById('paintCanvas');
+        const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
+        const bgCanvas = document.getElementById('bgCanvas');
+        const bgCtx = bgCanvas.getContext('2d');
         const statusEl = document.getElementById('status');
 
-        // 设置画布大小为窗口大小
-        function resizeCanvas() {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight - 50; // 减去工具栏高度
-        }
-        window.addEventListener('resize', resizeCanvas);
-        resizeCanvas();
-
+        let particles = [];
+        let currentStroke = []; 
         let isDrawing = false;
-        let lastPos = { x: 0, y: 0 };
-        const myColor = '#' + Math.floor(Math.random()*16777215).toString(16); // 随机分配一个颜色
-
-        // --- 4. Supabase Realtime 核心逻辑 ---
         
-        // 创建并订阅频道
-        const channel = supabaseClient.channel('drawing_room', {
-            config: { broadcast: { self: false } } // 不接收自己发出的广播
+        // --- 核心修改：每个人进来随机一个颜色起点 ---
+        let myBaseHue = Math.random() * 360; 
+        let currentHue = myBaseHue; 
+
+        let hasDrawn = localStorage.getItem('user_has_drawn_stardust') === 'true';
+
+        function init() {
+            canvas.width = bgCanvas.width = window.innerWidth;
+            canvas.height = bgCanvas.height = window.innerHeight;
+            bgCtx.fillStyle = '#050510';
+            bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+            updateStatusUI();
+        }
+
+        class Particle {
+            constructor(x, y, hue, isPermanent = false) {
+                this.x = x;
+                this.y = y;
+                this.hue = hue;
+                this.size = Math.random() * 2 + 0.5;
+                this.life = 1.0;
+                this.decay = Math.random() * 0.015 + 0.01;
+                this.vx = (Math.random() - 0.5) * 0.8;
+                this.vy = (Math.random() - 0.5) * 0.8;
+                this.isPermanent = isPermanent;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life -= this.decay;
+            }
+
+            draw(targetCtx, centerX, centerY, count) {
+                for (let i = 0; i < count; i++) {
+                    targetCtx.save();
+                    targetCtx.translate(centerX, centerY);
+                    targetCtx.rotate((Math.PI * 2 / count) * i);
+                    
+                    const drawX = this.x - centerX;
+                    const drawY = this.y - centerY;
+
+                    // 壁画轨迹透明度较低，产生堆叠感；动态粒子较亮
+                    targetCtx.globalAlpha = this.isPermanent ? 0.2 : this.life;
+                    targetCtx.beginPath();
+                    targetCtx.arc(drawX, drawY, this.size, 0, Math.PI * 2);
+                    targetCtx.fillStyle = `hsla(${this.hue}, 85%, 75%, ${this.life})`;
+                    
+                    if(!this.isPermanent) {
+                        targetCtx.shadowBlur = 12;
+                        targetCtx.shadowColor = `hsla(${this.hue}, 80%, 70%, 0.8)`;
+                    }
+                    
+                    targetCtx.fill();
+                    targetCtx.restore();
+                }
+            }
+        }
+
+        const channel = supabaseClient.channel('drawing_room');
+
+        channel.on('broadcast', { event: 'draw_stardust' }, (payload) => {
+            const { points, startHue } = payload.payload;
+            renderRemoteStroke(points, startHue);
+        }).subscribe((status) => {
+            if (status === 'SUBSCRIBED') updateStatusUI();
         });
 
-        channel
-            .on('broadcast', { event: 'draw' }, (payload) => {
-                // 收到别人的坐标，画在自己的画布上
-                const { from, to, color } = payload.payload;
-                renderLine(from, to, color);
-            })
-            .subscribe((status) => {
-                if (status === 'SUBSCRIBED') {
-                    statusEl.innerText = '🟢 已连接 (在线协作中)';
-                    statusEl.style.color = 'green';
+        // 渲染他人的笔触
+        function renderRemoteStroke(points, startHue) {
+            let tempHue = startHue;
+            points.forEach(p => {
+                for(let i=0; i<1; i++) {
+                    const part = new Particle(p.x, p.y, tempHue, true);
+                    particles.push(part);
+                    part.draw(bgCtx, bgCanvas.width/2, bgCanvas.height/2, 8);
                 }
+                tempHue += 0.2;
             });
-
-        // --- 5. 绘图逻辑 ---
-
-        function renderLine(from, to, color) {
-            ctx.beginPath();
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 3;
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-            ctx.moveTo(from.x, from.y);
-            ctx.lineTo(to.x, to.y);
-            ctx.stroke();
-            ctx.closePath();
         }
 
-        function handleStart(x, y) {
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw(ctx, canvas.width / 2, canvas.height / 2, 8);
+                if (particles[i].life <= 0) particles.splice(i, 1);
+            }
+            requestAnimationFrame(animate);
+        }
+
+        function createParticles(x, y) {
+            if (!isDrawing || hasDrawn) return;
+            
+            currentStroke.push({x, y});
+            
+            for(let i=0; i<2; i++) {
+                const p = new Particle(x, y, currentHue, true);
+                particles.push(p);
+                p.draw(bgCtx, bgCanvas.width/2, bgCanvas.height/2, 8);
+            }
+            currentHue += 0.2; // 同一笔内颜色渐变
+        }
+
+        function handleStart(e) {
+            if (hasDrawn) return;
             isDrawing = true;
-            lastPos = { x, y };
-        }
-
-        function handleMove(x, y) {
-            if (!isDrawing) return;
-            const currentPos = { x, y };
-
-            // 1. 先在自己的画布上画
-            renderLine(lastPos, currentPos, myColor);
-
-            // 2. 将这一笔广播给所有人
-            channel.send({
-                type: 'broadcast',
-                event: 'draw',
-                payload: { from: lastPos, to: currentPos, color: myColor }
-            });
-
-            lastPos = currentPos;
+            currentStroke = [];
+            // 每次新的一笔可以重新随一个色相，或者沿用之前的色相
+            // 这里我们让每笔开始时的色相稍微跳跃一点点，增加多样性
+            currentHue = myBaseHue + (Math.random() * 30 - 15); 
+            const x = e.clientX || (e.touches && e.touches[0].clientX);
+            const y = e.clientY || (e.touches && e.touches[0].clientY);
+            createParticles(x, y);
         }
 
         function handleEnd() {
-            isDrawing = false;
+            if (isDrawing) {
+                isDrawing = false;
+                hasDrawn = true;
+                localStorage.setItem('user_has_drawn_stardust', 'true');
+                updateStatusUI();
+
+                // 广播这整笔的轨迹和颜色起点
+                channel.send({
+                    type: 'broadcast',
+                    event: 'draw_stardust',
+                    payload: { 
+                        points: currentStroke, 
+                        startHue: currentHue - (currentStroke.length * 0.2) 
+                    }
+                });
+            }
         }
 
-        // 鼠标事件
-        canvas.addEventListener('mousedown', e => handleStart(e.offsetX, e.offsetY));
-        canvas.addEventListener('mousemove', e => handleMove(e.offsetX, e.offsetY));
+        function updateStatusUI() {
+            if (hasDrawn) {
+                statusEl.innerText = '🚫 留墨完成';
+                statusEl.style.color = '#ff4757';
+            } else {
+                statusEl.innerText = '🟢 请挥洒星尘';
+                statusEl.style.color = '#2ecc71';
+            }
+        }
+
+        function resetLimit() {
+            localStorage.removeItem('user_has_drawn_stardust');
+            hasDrawn = false;
+            // 重置背景颜色，清空画布
+            bgCtx.fillStyle = '#050510';
+            bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+            myBaseHue = Math.random() * 360; // 重置时也换个主色调
+            updateStatusUI();
+        }
+
+        canvas.addEventListener('mousedown', handleStart);
         window.addEventListener('mouseup', handleEnd);
-
-        // 触摸事件 (适配手机)
-        canvas.addEventListener('touchstart', e => {
-            const touch = e.touches[0];
-            const rect = canvas.getBoundingClientRect();
-            handleStart(touch.clientX - rect.left, touch.clientY - rect.top);
-            e.preventDefault();
+        canvas.addEventListener('mousemove', (e) => createParticles(e.clientX, e.clientY));
+        canvas.addEventListener('touchstart', (e) => { handleStart(e); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('touchmove', (e) => { 
+            const t = e.touches[0];
+            createParticles(t.clientX, t.clientY); 
+            e.preventDefault(); 
         }, { passive: false });
+        canvas.addEventListener('touchend', handleEnd);
 
-        canvas.addEventListener('touchmove', e => {
-            const touch = e.touches[0];
-            const rect = canvas.getBoundingClientRect();
-            handleMove(touch.clientX - rect.left, touch.clientY - rect.top);
-            e.preventDefault();
-        }, { passive: false });
-
-        function clearCanvas() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
+        init();
+        animate();
+        window.addEventListener('resize', init);
     </script>
 </body>
 </html>
